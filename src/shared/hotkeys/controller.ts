@@ -1,0 +1,90 @@
+import { KEY } from '../keys'
+
+export type HotkeyAction = { kind: 'dictate'; modeId: string | null } | { kind: 'edit' }
+export type HotkeyBinding = { keys: number[]; action: HotkeyAction }
+export type ControllerEvent =
+  { type: 'start'; action: HotkeyAction } | { type: 'stop' } | { type: 'cancel' }
+
+/** A key whose last keydown is older than this is treated as a missed key-up. */
+export const STALE_REPEAT_GAP_MS = 750
+
+type Phase = 'idle' | 'pressing' | 'toggled'
+
+export class HotkeyController {
+  private bindings: HotkeyBinding[] = []
+  private holdThresholdMs: number
+  private phase: Phase = 'idle'
+  private readonly pressed = new Set<number>()
+  private readonly lastDown = new Map<number, number>()
+  private activeKeys: ReadonlySet<number> = new Set()
+  private pressStart = 0
+
+  constructor(opts: { bindings: HotkeyBinding[]; holdThresholdMs: number }) {
+    this.holdThresholdMs = opts.holdThresholdMs
+    this.setBindings(opts.bindings)
+  }
+
+  keyDown(code: number, t: number): ControllerEvent | null {
+    if (code === KEY.Escape) {
+      if (this.phase === 'idle') return null
+      this.phase = 'idle'
+      return { type: 'cancel' }
+    }
+
+    const last = this.lastDown.get(code)
+    this.lastDown.set(code, t)
+    let fresh = false
+    if (this.pressed.has(code)) {
+      if (last === undefined || t - last <= STALE_REPEAT_GAP_MS) return null
+      // Missed key-up: forget everything else and treat this as a fresh press.
+      this.pressed.clear()
+      fresh = true
+    }
+    this.pressed.add(code)
+
+    // While deciding tap vs hold, extra keys joining the chord are ignored.
+    if (this.phase === 'pressing' && !fresh) return null
+
+    const binding = this.match()
+    if (!binding) return null
+    if (this.phase === 'idle') {
+      this.phase = 'pressing'
+      this.activeKeys = new Set(binding.keys)
+      this.pressStart = t
+      return { type: 'start', action: binding.action }
+    }
+    this.phase = 'idle'
+    return { type: 'stop' }
+  }
+
+  keyUp(code: number, t: number): ControllerEvent | null {
+    this.pressed.delete(code)
+    if (this.phase !== 'pressing' || !this.activeKeys.has(code)) return null
+    if (t - this.pressStart >= this.holdThresholdMs) {
+      this.phase = 'idle'
+      return { type: 'stop' }
+    }
+    this.phase = 'toggled'
+    return null
+  }
+
+  notifyStopped(): void {
+    this.phase = 'idle'
+  }
+
+  setBindings(b: HotkeyBinding[], holdThresholdMs?: number): void {
+    // Longer chords first so e.g. Shift+AltRight wins over AltRight alone.
+    this.bindings = [...b].sort((x, y) => y.keys.length - x.keys.length)
+    if (holdThresholdMs !== undefined) this.holdThresholdMs = holdThresholdMs
+  }
+
+  pressedKeys(): ReadonlySet<number> {
+    return this.pressed
+  }
+
+  private match(): HotkeyBinding | undefined {
+    return this.bindings.find(
+      (b) => b.keys.length === this.pressed.size && b.keys.every((k) => this.pressed.has(k))
+    )
+  }
+}
