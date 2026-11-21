@@ -41,7 +41,7 @@
       "kind": "stt",
       "provider": "deepgram",
       "model": "nova-2",
-      "usdPerMinute": 0.0058
+      "usdPerMinute": 0.0043
     },
     {
       "kind": "stt",
@@ -117,6 +117,32 @@
       "model": "openai/gpt-oss-20b",
       "usdPerMTokIn": 0.075,
       "usdPerMTokOut": 0.3
+    },
+    {
+      "kind": "stt",
+      "provider": "elevenlabs",
+      "model": "scribe_v2",
+      "usdPerMinute": 0.003333
+    },
+    {
+      "kind": "stt",
+      "provider": "elevenlabs",
+      "model": "scribe_v3",
+      "usdPerMinute": 0.003333
+    },
+    {
+      "kind": "llm",
+      "provider": "gemini",
+      "model": "gemini-3.8-flash",
+      "usdPerMTokIn": 1.5,
+      "usdPerMTokOut": 7.5
+    },
+    {
+      "kind": "llm",
+      "provider": "gemini",
+      "model": "gemini-3.1-pro-preview",
+      "usdPerMTokIn": 2,
+      "usdPerMTokOut": 12
     }
   ]
 }
