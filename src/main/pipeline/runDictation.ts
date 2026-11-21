@@ -442,7 +442,12 @@ export async function runDictation(
     return await finish('done', ai.text)
   } catch (e) {
     const err = normalizeError(e, row.llmProvider ?? 'llm')
-    if (!err.cancelled && job.variant === 'transform' && settings.output.fallbackToRawOnAiError) {
+    if (
+      !isRerun &&
+      !err.cancelled &&
+      job.variant === 'transform' &&
+      settings.output.fallbackToRawOnAiError
+    ) {
       row.errorKind = err.kind
       row.errorMessage = err.message
       return finish('done_raw_fallback', rawText)

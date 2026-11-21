@@ -371,6 +371,20 @@ test('rerun failure leaves the prior row and meta untouched', async () => {
   expect(statusTrail('j1')).toEqual([])
 })
 
+test('rerun AI error never falls back over a good result', async () => {
+  await firstRun()
+  const before = history.get('j1')
+  const metaBefore = await files.readMeta('j1')
+  expect(settings.output.fallbackToRawOnAiError).toBe(true)
+  llm.impl = async () => {
+    throw new ProviderError('server', 'anthropic', 'boom', 500)
+  }
+  const out = await runDictation(job(clean), deps, { reuseRawText: 'hello' })
+  expect(out).toMatchObject({ status: 'failed', text: null, errorKind: 'server' })
+  expect(history.get('j1')).toEqual(before)
+  expect(await files.readMeta('j1')).toEqual(metaBefore)
+})
+
 test('rerun preserves hasAudio false when audio was deleted', async () => {
   settings.privacy.keepAudio = false
   await firstRun()
