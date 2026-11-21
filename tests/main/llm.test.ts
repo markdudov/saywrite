@@ -1,4 +1,14 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test, vi, type Mock } from 'vitest'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+  type Mock
+} from 'vitest'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import Anthropic from '@anthropic-ai/sdk'
@@ -60,7 +70,8 @@ beforeEach(() => {
   }
 })
 
-const ask = (model: string, apiKey = 'k'): LlmRequest => ({ model, system: 'S', user: 'U', apiKey })
+const KEY = 'sk-test-SECRET'
+const ask = (model: string, apiKey = KEY): LlmRequest => ({ model, system: 'S', user: 'U', apiKey })
 
 type Fake = AnthropicLike & {
   messages: { create: Mock }
@@ -87,8 +98,9 @@ describe('openai-compatible chat', () => {
       { timeoutMs: 2000 }
     )
     expect(last.method).toBe('POST')
-    expect(last.path).toBe('/v1/chat/completions')
-    expect(last.headers.authorization).toBe('Bearer k')
+    expect(last.rawUrl).toBe('/v1/chat/completions')
+    expect(last.rawUrl).not.toContain(KEY)
+    expect(last.headers.authorization).toBe(`Bearer ${KEY}`)
     expect(last.body).toEqual({
       model: 'gpt-5-mini',
       messages: [
@@ -177,7 +189,8 @@ describe('anthropic', () => {
       usage: { input_tokens: 5, output_tokens: 2 }
     })
     const ac = new AbortController()
-    const r = await createLlmAdapter('anthropic', { anthropicClient: () => fake }).complete(
+    const factory = vi.fn(() => fake)
+    const r = await createLlmAdapter('anthropic', { anthropicClient: factory }).complete(
       ask('claude-opus-5-5'),
       { timeoutMs: 2000, signal: ac.signal }
     )
@@ -193,6 +206,7 @@ describe('anthropic', () => {
       },
       { signal: ac.signal }
     )
+    expect(factory).toHaveBeenCalledWith(KEY, 2000)
     expect(fake.messages.create).not.toHaveBeenCalled()
     expect(r).toEqual({
       text: 'hi!',
@@ -291,7 +305,7 @@ describe('anthropic', () => {
     // Real default client would hit the network, so exercise the injectable path directly.
     const { listAnthropicModels } = await import('../../src/main/providers/llm/anthropic')
     const fake = fakeAnthropic({}, ['claude-a', 'claude-b'])
-    expect(await listAnthropicModels('k', () => fake)).toEqual(['claude-a', 'claude-b'])
+    expect(await listAnthropicModels(KEY, () => fake)).toEqual(['claude-a', 'claude-b'])
   })
 })
 
@@ -306,8 +320,10 @@ describe('gemini', () => {
       { timeoutMs: 2000 }
     )
     expect(last.path).toBe('/v1beta/models/gemini-3.8-flash:generateContent')
-    expect(last.headers['x-goog-api-key']).toBe('k')
-    expect(last.rawUrl).not.toContain('k=')
+    expect(last.headers['x-goog-api-key']).toBe(KEY)
+    expect(last.rawUrl).toBe('/v1beta/models/gemini-3.8-flash:generateContent')
+    expect(last.rawUrl).not.toMatch(/key=/i)
+    expect(last.rawUrl).not.toContain(KEY)
     expect(last.body).toEqual({
       systemInstruction: { parts: [{ text: 'S' }] },
       contents: [{ role: 'user', parts: [{ text: 'U' }] }]
@@ -339,9 +355,9 @@ describe('gemini', () => {
 describe('listModels and testKey', () => {
   test('openai-compatible lists data[].id', async () => {
     reply = { data: [{ id: 'm1' }, { id: 'm2' }] }
-    expect(await listModels('llm', 'openai', 'k', `${base}/v1`)).toEqual(['m1', 'm2'])
+    expect(await listModels('llm', 'openai', KEY, `${base}/v1`)).toEqual(['m1', 'm2'])
     expect(last.path).toBe('/v1/models')
-    expect(last.headers.authorization).toBe('Bearer k')
+    expect(last.headers.authorization).toBe(`Bearer ${KEY}`)
   })
 
   test('gemini keeps generateContent models and strips prefix', async () => {
@@ -351,19 +367,19 @@ describe('listModels and testKey', () => {
         { name: 'models/embed', supportedGenerationMethods: ['embedContent'] }
       ]
     }
-    expect(await listModels('llm', 'gemini', 'k', `${base}/v1beta`)).toEqual(['gemini-3.8-flash'])
+    expect(await listModels('llm', 'gemini', KEY, `${base}/v1beta`)).toEqual(['gemini-3.8-flash'])
     expect(last.rawUrl).toBe('/v1beta/models?pageSize=1000')
-    expect(last.headers['x-goog-api-key']).toBe('k')
+    expect(last.headers['x-goog-api-key']).toBe(KEY)
   })
 
   test('deepgram/elevenlabs list catalog models', async () => {
-    expect(await listModels('stt', 'deepgram', 'k')).toEqual(['nova-3', 'nova-2'])
-    expect(await listModels('stt', 'elevenlabs', 'k')).toEqual(['scribe_v2', 'scribe_v3'])
+    expect(await listModels('stt', 'deepgram', KEY)).toEqual(['nova-3', 'nova-2'])
+    expect(await listModels('stt', 'elevenlabs', KEY)).toEqual(['scribe_v2', 'scribe_v3'])
   })
 
   test('testKey ok and auth failure', async () => {
     reply = { data: [{ id: 'm1' }] }
-    expect(await testKey('llm', 'openai', 'k', `${base}/v1`)).toEqual({ ok: true, models: ['m1'] })
+    expect(await testKey('llm', 'openai', KEY, `${base}/v1`)).toEqual({ ok: true, models: ['m1'] })
     status = 401
     reply = { error: { message: 'bad key' } }
     expect(await testKey('llm', 'openai', 'bad', `${base}/v1`)).toMatchObject({
@@ -386,5 +402,65 @@ describe('listModels and testKey', () => {
       ok: false,
       kind: 'auth'
     })
+  })
+})
+
+describe('production default URLs and key hygiene', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const stubFetch = (body: unknown, status = 200): Mock =>
+    vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(JSON.stringify(body), { status })
+      ) as unknown as Mock
+  const urlOf = (f: Mock): string => String(f.mock.calls[0][0])
+
+  const chat = { choices: [{ message: { content: 'out' } }] }
+  test.each([
+    ['openai', 'https://api.openai.com/v1/chat/completions'],
+    ['groq', 'https://api.groq.com/openai/v1/chat/completions'],
+    ['openrouter', 'https://openrouter.ai/api/v1/chat/completions']
+  ] as const)('%s default chat URL', async (id, url) => {
+    const f = stubFetch(chat)
+    await createLlmAdapter(id).complete(ask('m'), { timeoutMs: 2000 })
+    expect(urlOf(f)).toBe(url)
+  })
+
+  test('gemini default URL', async () => {
+    const f = stubFetch({ candidates: [{ content: { parts: [{ text: 'x' }] } }] })
+    await createLlmAdapter('gemini').complete(ask('gemini-3.8-flash'), { timeoutMs: 2000 })
+    expect(urlOf(f)).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent'
+    )
+  })
+
+  test('key-test default URLs', async () => {
+    let f = stubFetch({ data: [] })
+    await testKey('llm', 'openai', KEY)
+    expect(urlOf(f)).toBe('https://api.openai.com/v1/models')
+    f.mockRestore()
+    f = stubFetch({ models: [] })
+    await testKey('llm', 'gemini', KEY)
+    expect(urlOf(f)).toBe('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000')
+    f.mockRestore()
+    f = stubFetch({})
+    await testKey('stt', 'deepgram', KEY)
+    expect(urlOf(f)).toBe('https://api.deepgram.com/v1/projects')
+    f.mockRestore()
+    f = stubFetch({})
+    await testKey('stt', 'elevenlabs', KEY)
+    expect(urlOf(f)).toBe('https://api.elevenlabs.io/v1/user')
+  })
+
+  test('401 error message never contains the key', async () => {
+    stubFetch({ error: { message: 'Incorrect API key provided' } }, 401)
+    const e = await createLlmAdapter('openai')
+      .complete(ask('m'), { timeoutMs: 2000 })
+      .catch((x: unknown) => x)
+    expect(e).toMatchObject({ kind: 'auth' })
+    expect((e as Error).message).not.toContain(KEY)
+    const r = await testKey('llm', 'openai', KEY)
+    expect(JSON.stringify(r)).not.toContain(KEY)
   })
 })

@@ -48,8 +48,13 @@ export interface AnthropicLike {
 }
 
 export function defaultAnthropicClient(apiKey: string, timeoutMs = 60_000): AnthropicLike {
-  // The SDK's concrete types are far wider than AnthropicLike; narrow it here once.
-  return new Anthropic({ apiKey, timeout: timeoutMs, maxRetries: 1 }) as unknown as AnthropicLike
+  const client = new Anthropic({ apiKey, timeout: timeoutMs, maxRetries: 1 })
+  // Thin wrappers (no casts): the compiler checks our params against the SDK's real types.
+  return {
+    messages: { create: (params, opts) => client.messages.create(params, opts) },
+    beta: { messages: { create: (params, opts) => client.beta.messages.create(params, opts) } },
+    models: { list: () => client.models.list() }
+  }
 }
 
 export function mapAnthropicError(e: unknown): ProviderError {
