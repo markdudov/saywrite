@@ -1,0 +1,13 @@
+{
+  "overlay": {
+    "transcribing": "Transcribing…",
+    "writing": "Writing…",
+    "empty": "Didn't catch that",
+    "retry": "Retry",
+    "copy": "Copy",
+    "cancel": "Cancel",
+    "micError": "Microphone unavailable",
+    "mode": "Mode",
+    "drag": "Move"
+  }
+}
