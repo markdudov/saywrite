@@ -134,8 +134,8 @@
       "kind": "llm",
       "provider": "gemini",
       "model": "gemini-3.8-flash",
-      "usdPerMTokIn": 1.5,
-      "usdPerMTokOut": 7.5
+      "usdPerMTokIn": 0.75,
+      "usdPerMTokOut": 3.75
     },
     {
       "kind": "llm",

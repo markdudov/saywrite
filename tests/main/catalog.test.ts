@@ -21,3 +21,9 @@ describe('catalog', () => {
     expect(() => providerInfo('stt', 'nope')).toThrow()
   })
 })
+
+test('gemini-3.8-flash is priced at the current rate (R15)', () => {
+  const t = loadPricing()
+  expect(llmCostUsd(t, 'gemini', 'gemini-3.8-flash', 1_000_000, 0)).toBeCloseTo(0.75)
+  expect(llmCostUsd(t, 'gemini', 'gemini-3.8-flash', 0, 1_000_000)).toBeCloseTo(3.75)
+})
