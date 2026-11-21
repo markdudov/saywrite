@@ -71,18 +71,24 @@ function noop(): void {
   /* intentionally empty */
 }
 
+const enc = (t: string): Uint8Array => new TextEncoder().encode(t)
+const snap = (t: string, extra: Record<string, Uint8Array> = {}): ClipboardSnapshot => ({
+  items: [{ 'text/plain': enc(t), ...extra }]
+})
+
 function fakeClipboard(
   initial: ClipboardSnapshot
-): ClipboardPort & { restored?: ClipboardSnapshot } {
-  let text = initial.text ?? ''
+): ClipboardPort & { restored?: ClipboardSnapshot; current(): string } {
+  let text = new TextDecoder().decode(initial.items[0]?.['text/plain'] ?? new Uint8Array())
   const cb = {
     restored: undefined as ClipboardSnapshot | undefined,
-    snapshot: () => ({ ...initial }),
-    restore(s: ClipboardSnapshot) {
+    snapshot: async () => structuredClone(initial),
+    async restore(s: ClipboardSnapshot) {
       cb.restored = s
     },
-    readText: () => text,
-    writeText(t: string) {
+    readText: async () => text,
+    current: () => text,
+    async writeText(t: string) {
       text = t
     }
   }
@@ -109,28 +115,32 @@ function fakeSleep(): { calls: number[]; sleep(ms: number): Promise<void> } {
 }
 
 test('captureSelection returns copied text and restores clipboard', async () => {
-  const cb = fakeClipboard({ text: 'orig', html: '<b>orig</b>' })
-  const keys = fakeKeys(() => cb.writeText('selected words'))
+  const cb = fakeClipboard(
+    snap('orig', { 'text/html': enc('<b>orig</b>'), 'image/png': Uint8Array.from([1, 2, 3]) })
+  )
+  const keys = fakeKeys(() => void cb.writeText('selected words'))
   const { sleep } = fakeSleep()
   expect(await captureSelection({ clipboard: cb, keys, sleep, random: () => 'r1' })).toBe(
     'selected words'
   )
-  expect(cb.restored).toEqual({ text: 'orig', html: '<b>orig</b>' })
+  expect(cb.restored).toEqual(
+    snap('orig', { 'text/html': enc('<b>orig</b>'), 'image/png': Uint8Array.from([1, 2, 3]) })
+  )
 })
 
 test('captureSelection writes the sentinel before copying', async () => {
-  const cb = fakeClipboard({ text: 'orig' })
+  const cb = fakeClipboard(snap('orig'))
   let seen = ''
   const keys = fakeKeys(() => {
-    seen = cb.readText()
-    cb.writeText('x')
+    seen = cb.current()
+    void cb.writeText('x')
   })
   await captureSelection({ clipboard: cb, keys, sleep: async () => {}, random: () => 'r1' })
   expect(seen).toBe('saywrite-sentinel-r1')
 })
 
 test('captureSelection: nothing selected → null after timeout, clipboard restored', async () => {
-  const cb = fakeClipboard({ text: 'orig' })
+  const cb = fakeClipboard(snap('orig'))
   const { sleep, calls } = fakeSleep()
   const result = await captureSelection(
     { clipboard: cb, keys: fakeKeys(), sleep, random: () => 'r2' },
@@ -139,26 +149,26 @@ test('captureSelection: nothing selected → null after timeout, clipboard resto
   expect(result).toBeNull()
   expect(calls.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(300)
   expect(calls.every((c) => c === 15)).toBe(true)
-  expect(cb.restored).toEqual({ text: 'orig' })
+  expect(cb.restored).toEqual(snap('orig'))
 })
 
 test('captureSelection: whitespace-only → null', async () => {
-  const cb = fakeClipboard({ text: 'orig' })
-  const keys = fakeKeys(() => cb.writeText('  \n '))
+  const cb = fakeClipboard(snap('orig'))
+  const keys = fakeKeys(() => void cb.writeText('  \n '))
   expect(
     await captureSelection({ clipboard: cb, keys, sleep: async () => {}, random: () => 'r' })
   ).toBeNull()
 })
 
 test('captureSelection restores the clipboard even when copy throws', async () => {
-  const cb = fakeClipboard({ text: 'orig' })
+  const cb = fakeClipboard(snap('orig'))
   const keys = fakeKeys(() => {
     throw new Error('boom')
   })
   await expect(
     captureSelection({ clipboard: cb, keys, sleep: async () => {}, random: () => 'r' })
   ).rejects.toThrow('boom')
-  expect(cb.restored).toEqual({ text: 'orig' })
+  expect(cb.restored).toEqual(snap('orig'))
 })
 
 test('environmentInfo', () => {

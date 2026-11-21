@@ -1,16 +1,11 @@
-export type ClipboardSnapshot = {
-  text?: string
-  html?: string
-  rtf?: string
-  imagePng?: Uint8Array
-  bookmark?: { title: string; url: string }
-}
+/** One record per clipboard item, keyed by MIME type; values are the raw bytes. */
+export type ClipboardSnapshot = { items: Array<Record<string, Uint8Array>> }
 
 export interface ClipboardPort {
-  snapshot(): ClipboardSnapshot
-  restore(s: ClipboardSnapshot): void
-  readText(): string
-  writeText(t: string): void
+  snapshot(): Promise<ClipboardSnapshot>
+  restore(s: ClipboardSnapshot): Promise<void>
+  readText(): Promise<string>
+  writeText(t: string): Promise<void>
 }
 
 export interface KeySender {
@@ -36,21 +31,21 @@ export async function captureSelection(
   const timeoutMs = opts.timeoutMs ?? 300
   const pollMs = opts.pollMs ?? 15
   const { clipboard, keys, sleep, random } = deps
-  const snapshot = clipboard.snapshot()
+  const snapshot = await clipboard.snapshot()
   try {
     const sentinel = `saywrite-sentinel-${random()}`
-    clipboard.writeText(sentinel)
+    await clipboard.writeText(sentinel)
     keys.copy()
-    let text = clipboard.readText()
+    let text = await clipboard.readText()
     let waited = 0
     while (text === sentinel && waited < timeoutMs) {
       await sleep(pollMs)
       waited += pollMs
-      text = clipboard.readText()
+      text = await clipboard.readText()
     }
     if (text === sentinel || text.trim() === '') return null
     return text
   } finally {
-    clipboard.restore(snapshot)
+    await clipboard.restore(snapshot)
   }
 }

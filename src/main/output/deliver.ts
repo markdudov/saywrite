@@ -33,12 +33,12 @@ export async function deliverText(
   const { clipboard, keys, sleep } = deps
 
   if (opts.action === 'copy') {
-    clipboard.writeText(text)
+    await clipboard.writeText(text)
     return { delivered: 'copied', reason: 'copy_action' }
   }
 
   if (deps.isForegroundElevated()) {
-    clipboard.writeText(text)
+    await clipboard.writeText(text)
     return { delivered: 'copied', reason: 'elevated' }
   }
 
@@ -49,16 +49,16 @@ export async function deliverText(
     waited += MODIFIER_POLL_MS
   }
   if (keys.modifiersDown()) {
-    clipboard.writeText(text)
+    await clipboard.writeText(text)
     return { delivered: 'copied', reason: 'modifiers_held' }
   }
 
-  const snapshot = opts.restoreClipboard ? clipboard.snapshot() : undefined
-  const restoreIfOurs = (): void => {
-    if (snapshot && clipboard.readText() === text) clipboard.restore(snapshot)
+  const snapshot = opts.restoreClipboard ? await clipboard.snapshot() : undefined
+  const restoreIfOurs = async (): Promise<void> => {
+    if (snapshot && (await clipboard.readText()) === text) await clipboard.restore(snapshot)
   }
 
-  clipboard.writeText(text)
+  await clipboard.writeText(text)
   try {
     await sleep(opts.pasteDelayMs)
     keys.paste()
@@ -67,13 +67,13 @@ export async function deliverText(
       keys.enter()
     }
   } catch (err) {
-    restoreIfOurs()
+    await restoreIfOurs()
     throw err
   }
 
   if (snapshot) {
     await sleep(opts.restoreDelayMs)
-    restoreIfOurs()
+    await restoreIfOurs()
   }
   return { delivered: 'pasted' }
 }

@@ -2,6 +2,10 @@ import { describe, expect, test } from 'vitest'
 import { deliverText } from '../../src/main/output/deliver'
 import type { ClipboardPort, ClipboardSnapshot, KeySender } from '../../src/main/context/selection'
 
+const enc = (t: string): Uint8Array => new TextEncoder().encode(t)
+const dec = new TextDecoder()
+const textSnap = (t: string): ClipboardSnapshot => ({ items: [{ 'text/plain': enc(t) }] })
+
 type Setup = {
   log: string[]
   deps: Parameters<typeof deliverText>[2]
@@ -19,28 +23,28 @@ function setup(
   } = {}
 ): Setup {
   const log: string[] = []
-  let current: ClipboardSnapshot = { text: 'orig' }
+  let current: ClipboardSnapshot = textSnap('orig')
   let restored: ClipboardSnapshot | undefined
   let snapshotObj: ClipboardSnapshot | undefined
   const mods = Array.isArray(init.modifiers) ? [...init.modifiers] : []
   const clipboard: ClipboardPort = {
-    snapshot: () => {
+    snapshot: async () => {
       log.push('snapshot')
       snapshotObj = structuredClone(current)
       return snapshotObj
     },
-    restore: (s) => {
+    restore: async (s) => {
       log.push('restore')
       restored = s
       current = s
     },
-    readText: () => {
+    readText: async () => {
       log.push('read')
-      return init.readText ?? current.text ?? ''
+      return init.readText ?? dec.decode(current.items[0]?.['text/plain'] ?? new Uint8Array())
     },
-    writeText: (t) => {
+    writeText: async (t) => {
       log.push(`write:${t}`)
-      current = { text: t }
+      current = textSnap(t)
     }
   }
   const keys: KeySender = {
@@ -99,18 +103,22 @@ describe('deliverText', () => {
   })
 
   test('restores rich clipboard exactly', async () => {
-    const snap = {
-      text: 't',
-      html: '<i>t</i>',
-      rtf: '{\\rtf1 t}',
-      imagePng: Uint8Array.from([1, 2, 3])
+    const snap: ClipboardSnapshot = {
+      items: [
+        {
+          'text/plain': enc('t'),
+          'text/html': enc('<i>t</i>'),
+          'image/png': Uint8Array.from([1, 2, 3])
+        },
+        { 'text/plain': enc('second') }
+      ]
     }
     const s = setup()
     s.setCurrent(snap)
     await deliverText('hi', opts, s.deps)
     expect(s.restored).toEqual(snap)
     expect(s.restored).toBe(s.snapshotObj)
-    expect(Array.from(s.restored!.imagePng!)).toEqual([1, 2, 3])
+    expect(Array.from(s.restored!.items[0]['image/png'])).toEqual([1, 2, 3])
   })
 
   test('no restore when user copied meanwhile', async () => {
