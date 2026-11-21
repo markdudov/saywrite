@@ -1,0 +1,11 @@
+appId: com.saywrite.app
+productName: Saywrite
+directories:
+  buildResources: build
+files:
+  - out/**
+  - resources/**
+  - package.json
+asarUnpack:
+  - resources/**
+npmRebuild: false
