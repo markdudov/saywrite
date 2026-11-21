@@ -128,7 +128,9 @@ export function createOverlayWindow(settings: SettingsStore): OverlayHandle {
       win.showInactive()
     },
     hide() {
-      if (!win.isDestroyed()) win.hide()
+      if (win.isDestroyed()) return
+      win.hide()
+      win.setIgnoreMouseEvents(true, { forward: true })
     },
     onMessage(cb) {
       listeners.add(cb)

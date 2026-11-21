@@ -2,7 +2,8 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { OverlayCommand, OverlayToMain, SaywriteOverlayApi } from '../../shared/ipc'
 import { cues } from './cues'
-import { Recorder } from './recorder'
+import { createRecorder } from './recorder'
+import { createSessionController } from './sessionController'
 import { initialView, overlayReducer } from './state'
 import { Waveform } from './Waveform'
 
@@ -26,58 +27,31 @@ export function Overlay(): React.JSX.Element | null {
   const [view, dispatch] = useReducer(overlayReducer, initialView)
   const [now, setNow] = useState(() => Date.now())
   const [listOpen, setListOpen] = useState(false)
-  const recorder = useRef(new Recorder())
-  const session = useRef<{ id: string; sounds: boolean } | null>(null)
+  const hover = useRef({ pill: false, list: false })
   const send = (m: OverlayToMain): void => window.saywriteOverlay.send(m)
-
+  const tRef = useRef(t)
   useEffect(() => {
-    const api = window.saywriteOverlay
-    const rec = recorder.current
-    return api.onCommand((c: OverlayCommand) => {
-      dispatch(c)
-      if (c.type === 'start') {
-        session.current = { id: c.sessionId, sounds: c.sounds }
-        setListOpen(false)
-        if (c.sounds) cues.start()
-        rec
-          .start(c.deviceId, (value) => dispatch({ type: 'level', value }))
-          .catch((err: unknown) => {
-            session.current = null
-            if (c.sounds) cues.error()
-            dispatch({ type: 'state', state: 'error', message: t('overlay.micError'), jobId: null })
-            api.send({
-              type: 'audioError',
-              sessionId: c.sessionId,
-              message: err instanceof Error ? err.message : String(err)
-            })
-          })
-      } else if (c.type === 'stop') {
-        const s = session.current
-        session.current = null
-        if (s?.sounds) cues.stop()
-        void rec.stop().then((r) => {
-          if (r && s) {
-            api.send({
-              type: 'audio',
-              sessionId: c.sessionId,
-              pcm: r.pcm,
-              sampleRate: r.sampleRate
-            })
-          }
-        })
-      } else if (c.type === 'cancel') {
-        session.current = null
-        void rec.cancel()
-      } else if (c.type === 'state' && c.state === 'error' && session.current?.sounds) {
-        cues.error()
-      }
-    })
+    tRef.current = t
   }, [t])
 
-  // Release the microphone if the page goes away.
   useEffect(() => {
-    const rec = recorder.current
-    return () => void rec.cancel()
+    const recorder = createRecorder()
+    const controller = createSessionController({
+      recorder,
+      send: (m) => window.saywriteOverlay.send(m),
+      dispatch,
+      cues,
+      micErrorText: () => tRef.current('overlay.micError')
+    })
+    const off = window.saywriteOverlay.onCommand((c: OverlayCommand) => {
+      if (c.type === 'start') setListOpen(false)
+      controller.handle(c)
+    })
+    // Release the microphone if the page goes away.
+    return () => {
+      off()
+      void recorder.cancel()
+    }
   }, [])
 
   // Timer tick while recording.
@@ -98,22 +72,32 @@ export function Overlay(): React.JSX.Element | null {
     return () => clearTimeout(id)
   }, [view.kind])
 
-  // Nothing visible means nothing should intercept the mouse.
+  // An unmounted element never fires pointerleave: recompute the flag whenever what is on screen
+  // changes so the transparent window cannot stay mouse-capturing.
+  const listVisible = listOpen && view.kind === 'recording'
   useEffect(() => {
-    if (view.kind === 'hidden') send({ type: 'interactive', value: false })
-  }, [view.kind])
+    if (!listVisible) hover.current.list = false
+    if (view.kind === 'hidden') hover.current.pill = false
+    window.saywriteOverlay.send({
+      type: 'interactive',
+      value: hover.current.pill || hover.current.list
+    })
+  }, [listVisible, view.kind])
 
   if (view.kind === 'hidden') return null
 
-  const interactive = (value: boolean) => (): void => send({ type: 'interactive', value })
+  const setHover = (el: 'pill' | 'list', value: boolean): void => {
+    hover.current[el] = value
+    send({ type: 'interactive', value: hover.current.pill || hover.current.list })
+  }
 
   return (
     <div className="flex h-screen w-screen flex-col items-center justify-end pb-2">
-      {listOpen && view.kind === 'recording' && (
+      {listVisible && (
         <ul
           className="mb-2 max-h-36 w-56 overflow-y-auto rounded-xl bg-neutral-900/95 p-1 text-sm text-white shadow-lg"
-          onPointerEnter={interactive(true)}
-          onPointerLeave={interactive(false)}
+          onPointerEnter={() => setHover('list', true)}
+          onPointerLeave={() => setHover('list', false)}
         >
           {view.modes.map((m) => (
             <li key={m.id}>
@@ -134,8 +118,8 @@ export function Overlay(): React.JSX.Element | null {
       )}
       <div
         className="flex items-center gap-3 rounded-full bg-neutral-900/95 px-3 py-2 text-sm text-white shadow-lg"
-        onPointerEnter={interactive(true)}
-        onPointerLeave={interactive(false)}
+        onPointerEnter={() => setHover('pill', true)}
+        onPointerLeave={() => setHover('pill', false)}
       >
         <div
           className="drag-region h-5 w-2 cursor-grab rounded bg-white/30"
