@@ -326,11 +326,118 @@ test('chunks long audio for OpenAI (600 s)', async () => {
   expect(history.get('j1')?.sttCostUsd).toBeCloseTo((700 / 60) * 0.006, 6)
 })
 
-test('rerun reuses raw text', async () => {
-  llm.returns('Fixed.')
+test('rerun reuses raw text without re-applying replacements', async () => {
+  llm.returns('Fixed комит.')
   const out = await runDictation(job(clean), deps, { reuseRawText: 'raw комит' })
   expect(stt.calls).toHaveLength(0)
-  expect(out).toMatchObject({ status: 'done', rawText: 'raw commit', text: 'Fixed.' })
+  expect(out).toMatchObject({ status: 'done', rawText: 'raw комит', text: 'Fixed commit.' })
+  expect(llm.calls[0].user).toContain('raw комит')
+})
+
+const firstRun = async (): Promise<void> => {
+  stt.returns('hello')
+  llm.returns('Hello.')
+  await runDictation(job(clean), deps)
+  trail = {}
+}
+
+test('rerun success keeps stt cost and adds llm cost, no intermediate statuses', async () => {
+  await firstRun()
+  const before = history.get('j1')!
+  llm.returns('Hello again.')
+  const out = await runDictation(job(clean), deps, { reuseRawText: 'hello' })
+  expect(out.status).toBe('done')
+  const after = history.get('j1')!
+  expect(after.sttCostUsd).toBe(before.sttCostUsd)
+  expect(after.llmCostUsd).toBeCloseTo(before.llmCostUsd! * 2, 9)
+  expect(after).toMatchObject({ rawText: 'hello', finalText: 'Hello again.', sttProvider: 'groq' })
+  expect(statusTrail('j1')).toEqual(['done'])
+  const meta = await files.readMeta('j1')
+  expect(meta?.timings.sttMs).not.toBeNull()
+})
+
+test('rerun failure leaves the prior row and meta untouched', async () => {
+  await firstRun()
+  const before = history.get('j1')
+  const metaBefore = await files.readMeta('j1')
+  settings.output.fallbackToRawOnAiError = false
+  llm.impl = async () => {
+    throw new ProviderError('server', 'anthropic', 'boom', 500)
+  }
+  const out = await runDictation(job(clean), deps, { reuseRawText: 'hello' })
+  expect(out).toMatchObject({ status: 'failed', errorKind: 'server' })
+  expect(history.get('j1')).toEqual(before)
+  expect(await files.readMeta('j1')).toEqual(metaBefore)
+  expect(statusTrail('j1')).toEqual([])
+})
+
+test('rerun preserves hasAudio false when audio was deleted', async () => {
+  settings.privacy.keepAudio = false
+  await firstRun()
+  expect(history.get('j1')?.hasAudio).toBe(false)
+  settings.privacy.keepAudio = true
+  llm.returns('Again.')
+  await runDictation(job(clean), deps, { reuseRawText: 'hello' })
+  expect(history.get('j1')?.hasAudio).toBe(false)
+})
+
+test('missing audio failure marks hasAudio false', async () => {
+  await files.removeAudio('j1')
+  const out = await runDictation(job(dictation), deps)
+  expect(out).toMatchObject({ status: 'failed', errorKind: 'bad_request' })
+  expect(history.get('j1')?.hasAudio).toBe(false)
+})
+
+test('keepAudio false: failing done write keeps the audio', async () => {
+  settings.privacy.keepAudio = false
+  stt.returns('hi')
+  const orig = files.writeMeta.bind(files)
+  files.writeMeta = async (m) => {
+    if (m.status === 'done') throw new Error('disk full')
+    return orig(m)
+  }
+  const out = await runDictation(job(dictation), deps)
+  expect(out).toMatchObject({ status: 'done', text: 'hi' })
+  expect(await files.readAudio('j1')).not.toBeNull()
+  expect(history.get('j1')).toMatchObject({ finalText: 'hi', hasAudio: true })
+})
+
+test('removeAudio failure still yields done with hasAudio true', async () => {
+  settings.privacy.keepAudio = false
+  stt.returns('hi')
+  files.removeAudio = async () => {
+    throw new Error('EPERM')
+  }
+  const out = await runDictation(job(dictation), deps)
+  expect(out.status).toBe('done')
+  expect(history.get('j1')).toMatchObject({ status: 'done', hasAudio: true })
+})
+
+test('throwing onStatus does not break the pipeline', async () => {
+  stt.returns('hi')
+  deps.onStatus = () => {
+    throw new Error('listener')
+  }
+  const out = await runDictation(job(dictation), deps)
+  expect(out.status).toBe('done')
+  expect(history.get('j1')?.status).toBe('done')
+})
+
+test('runAiStep only throws ProviderError', async () => {
+  deps.llmFor = () => {
+    throw new Error('weird')
+  }
+  const p = runAiStep(
+    {
+      mode: clean,
+      variant: 'transform',
+      transcript: 'x',
+      context: job(clean).context,
+      env: job(clean).env
+    },
+    deps
+  )
+  await expect(p).rejects.toBeInstanceOf(ProviderError)
 })
 
 test('keepAudio false removes audio only on success', async () => {

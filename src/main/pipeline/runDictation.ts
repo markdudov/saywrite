@@ -152,46 +152,56 @@ export async function runAiStep(
   costUsd: number | null
   ms: number
 }> {
-  const { provider, model } = resolveLlm(a.mode, deps.settings())
-  const apiKey = apiKeyFor('llm', provider, deps)
-  const { system, user } = buildMessages({
-    mode: a.mode,
-    variant: a.variant,
-    transcript: a.transcript,
-    vocabulary: deps.vocabulary().terms,
-    context: a.context,
-    env: a.env
-  })
-  const adapter = deps.llmFor(provider)
-  const timeoutMs = (deps.timeouts ?? DEFAULT_TIMEOUTS).llmMs
-  const started = deps.now()
-  const res = await callWithTimeout(provider, timeoutMs, (signal) =>
-    adapter.complete({ model, system, user, apiKey }, { timeoutMs, signal })
-  )
-  const ms = deps.now() - started
-  const text = applyReplacements(res.text.trim(), deps.vocabulary().replacements).trim()
-  if (!text)
-    throw new ProviderError('empty', provider, `${infoFor('llm', provider).label} returned no text`)
-  return {
-    text,
-    provider,
-    model,
-    inputTokens: res.inputTokens,
-    outputTokens: res.outputTokens,
-    costUsd: llmCostUsd(deps.pricing, provider, model, res.inputTokens, res.outputTokens),
-    ms
+  let failedProvider: string = a.mode.ai.provider
+  try {
+    const target = resolveLlm(a.mode, deps.settings())
+    const { provider, model } = target
+    failedProvider = provider
+    const apiKey = apiKeyFor('llm', provider, deps)
+    const { system, user } = buildMessages({
+      mode: a.mode,
+      variant: a.variant,
+      transcript: a.transcript,
+      vocabulary: deps.vocabulary().terms,
+      context: a.context,
+      env: a.env
+    })
+    const adapter = deps.llmFor(provider)
+    const timeoutMs = (deps.timeouts ?? DEFAULT_TIMEOUTS).llmMs
+    const started = deps.now()
+    const res = await callWithTimeout(provider, timeoutMs, (signal) =>
+      adapter.complete({ model, system, user, apiKey }, { timeoutMs, signal })
+    )
+    const ms = deps.now() - started
+    const text = applyReplacements(res.text.trim(), deps.vocabulary().replacements).trim()
+    if (!text)
+      throw new ProviderError(
+        'empty',
+        provider,
+        `${infoFor('llm', provider).label} returned no text`
+      )
+    return {
+      text,
+      provider,
+      model,
+      inputTokens: res.inputTokens,
+      outputTokens: res.outputTokens,
+      costUsd: llmCostUsd(deps.pricing, provider, model, res.inputTokens, res.outputTokens),
+      ms
+    }
+  } catch (e) {
+    throw normalizeError(e, failedProvider)
   }
 }
 
 async function transcribe(
   job: DictationJob,
   target: SttTarget,
+  bytes: Uint8Array,
   deps: PipelineDeps
 ): Promise<string> {
   const apiKey = apiKeyFor('stt', target.provider, deps)
   const adapter = deps.sttFor(target.provider)
-  const bytes = await deps.files.readAudio(job.id)
-  if (!bytes) throw new ProviderError('bad_request', target.provider, 'Recording audio is missing')
 
   const t = deps.timeouts ?? DEFAULT_TIMEOUTS
   const vocabulary = deps.vocabulary().terms
@@ -228,13 +238,20 @@ async function transcribe(
   return parts.filter((p) => p !== '').join(' ')
 }
 
+const FINAL_OK = new Set<RecordingStatus>(['done', 'done_raw_fallback'])
+
 export async function runDictation(
   job: DictationJob,
   deps: PipelineDeps,
   opts: { reuseRawText?: string } = {}
 ): Promise<DictationOutcome> {
+  // Read configuration once, before any state is created.
   const settings = deps.settings()
+  const vocabulary = deps.vocabulary()
+  const keepAudio = settings.privacy.keepAudio
+  const isRerun = opts.reuseRawText !== undefined
   const needsAi = job.mode.ai.enabled || job.variant !== 'transform'
+
   let sttTarget: SttTarget | null
   try {
     sttTarget = resolveStt(job.mode, settings)
@@ -250,32 +267,45 @@ export async function runDictation(
     }
   }
 
-  const prior = opts.reuseRawText !== undefined ? deps.history.get(job.id) : null
-  const row: RecordingRow = {
-    id: job.id,
-    createdAt: job.createdAt,
-    status: 'transcribing',
-    modeId: job.mode.id,
-    modeName: job.mode.name,
-    appName: job.context.app?.name ?? null,
-    appId: job.context.app?.id ?? null,
-    durationMs: job.durationMs,
-    rawText: null,
-    finalText: null,
-    sttProvider: sttTarget?.provider ?? null,
-    sttModel: sttTarget?.model ?? null,
-    llmProvider: null,
-    llmModel: null,
-    sttCostUsd: null,
-    llmCostUsd: null,
-    errorKind: null,
-    errorMessage: null,
-    hasAudio: true
+  const prior = isRerun ? deps.history.get(job.id) : null
+  let priorMeta: RecordingMeta | null = null
+  if (isRerun) {
+    try {
+      priorMeta = await deps.files.readMeta(job.id)
+    } catch {
+      priorMeta = null
+    }
   }
-  const timings: RecordingMeta['timings'] = { sttMs: null, llmMs: null }
+
+  const row: RecordingRow = prior
+    ? { ...prior }
+    : {
+        id: job.id,
+        createdAt: job.createdAt,
+        status: 'transcribing',
+        modeId: job.mode.id,
+        modeName: job.mode.name,
+        appName: job.context.app?.name ?? null,
+        appId: job.context.app?.id ?? null,
+        durationMs: job.durationMs,
+        rawText: null,
+        finalText: null,
+        sttProvider: sttTarget?.provider ?? null,
+        sttModel: sttTarget?.model ?? null,
+        llmProvider: null,
+        llmModel: null,
+        sttCostUsd: null,
+        llmCostUsd: null,
+        errorKind: null,
+        errorMessage: null,
+        hasAudio: true
+      }
+  const timings: RecordingMeta['timings'] = { sttMs: priorMeta?.timings.sttMs ?? null, llmMs: null }
   let tokens: RecordingMeta['tokens'] = null
 
-  const persist = async (status: RecordingStatus): Promise<void> => {
+  /** Writes row + meta. A rerun writes only its successful final result. */
+  const persist = async (status: RecordingStatus, notify = true): Promise<void> => {
+    if (isRerun && !FINAL_OK.has(status)) return
     row.status = status
     deps.history.upsert(row)
     await deps.files.writeMeta({
@@ -288,65 +318,101 @@ export async function runDictation(
       timings,
       tokens
     })
-    deps.onStatus?.(job.id, status)
+    if (notify) {
+      try {
+        deps.onStatus?.(job.id, status)
+      } catch {
+        // a broken listener must not break the pipeline
+      }
+    }
   }
-  const outcome = (status: DictationOutcome['status'], text: string | null): DictationOutcome => ({
+  /** Intermediate / terminal-failure writes never abort the pipeline. */
+  const safePersist = async (status: RecordingStatus): Promise<void> => {
+    try {
+      await persist(status)
+    } catch {
+      // keep going: the dictation result matters more than the bookkeeping
+    }
+  }
+  const outcome = (
+    status: DictationOutcome['status'],
+    text: string | null,
+    rawText: string | null = row.rawText
+  ): DictationOutcome => ({
     status,
     text,
-    rawText: row.rawText,
+    rawText,
     errorKind: row.errorKind,
     errorMessage: row.errorMessage
   })
+  let rawForOutcome: string | null = null
   const fail = async (e: ProviderError): Promise<DictationOutcome> => {
     row.errorKind = e.kind
     row.errorMessage = e.message
-    await persist('failed')
-    return outcome('failed', null)
+    await safePersist('failed')
+    return outcome('failed', null, rawForOutcome ?? row.rawText)
   }
 
-  await persist('transcribing')
+  await safePersist('transcribing')
 
   // Speech to text
-  const replacements = deps.vocabulary().replacements
-  let raw: string
-  if (opts.reuseRawText !== undefined) {
-    raw = opts.reuseRawText
-    if (prior) {
-      row.sttProvider = prior.sttProvider
-      row.sttModel = prior.sttModel
-      row.sttCostUsd = prior.sttCostUsd
-    }
+  let rawText: string
+  if (isRerun) {
+    // Reused text already went through the replacements once; do not apply them again.
+    rawText = opts.reuseRawText!.trim()
+    rawForOutcome = rawText
+    if (!rawText) return outcome('empty', null, null)
+    if (!prior) row.rawText = rawText
   } else {
     if (!sttTarget) {
       return fail(new ProviderError('bad_request', 'stt', 'Unknown speech-to-text provider'))
     }
     const started = deps.now()
     try {
-      raw = await transcribe(job, sttTarget, deps)
+      const bytes = await deps.files.readAudio(job.id)
+      if (!bytes) {
+        row.hasAudio = false
+        throw new ProviderError('bad_request', sttTarget.provider, 'Recording audio is missing')
+      }
+      const raw = await transcribe(job, sttTarget, bytes, deps)
+      timings.sttMs = deps.now() - started
+      row.sttCostUsd = sttCostUsd(deps.pricing, sttTarget.provider, sttTarget.model, job.durationMs)
+      rawText = applyReplacements(raw.trim(), vocabulary.replacements).trim()
     } catch (e) {
       return fail(normalizeError(e, sttTarget.provider))
     }
-    timings.sttMs = deps.now() - started
-    row.sttCostUsd = sttCostUsd(deps.pricing, sttTarget.provider, sttTarget.model, job.durationMs)
+    if (!rawText) {
+      await safePersist('empty')
+      return outcome('empty', null)
+    }
+    row.rawText = rawText
   }
-  const rawText = applyReplacements(raw.trim(), replacements).trim()
-  if (!rawText) {
-    await persist('empty')
-    return outcome('empty', null)
-  }
-  row.rawText = rawText
 
   const finish = async (
     status: 'done' | 'done_raw_fallback',
     text: string
   ): Promise<DictationOutcome> => {
     row.finalText = text
-    if (!deps.settings().privacy.keepAudio) {
-      await deps.files.removeAudio(job.id)
-      row.hasAudio = false
+    if (isRerun) {
+      row.modeId = job.mode.id
+      row.modeName = job.mode.name
     }
-    await persist(status)
-    return outcome(status, text)
+    // Write the result first, with the audio still recorded as present.
+    try {
+      await persist(status)
+    } catch {
+      return outcome(status, text, rawText) // result is returned; audio stays for a later rerun
+    }
+    if (!keepAudio && row.hasAudio) {
+      try {
+        await deps.files.removeAudio(job.id)
+        row.hasAudio = false
+        await persist(status, false)
+      } catch {
+        // keep hasAudio as written; retention purge removes the file later
+      }
+    }
+    return outcome(status, text, rawText)
   }
 
   if (!needsAi) return finish('done', rawText)
@@ -354,7 +420,7 @@ export async function runDictation(
   // AI step
   row.llmProvider = llmTarget?.provider ?? null
   row.llmModel = llmTarget?.model ?? null
-  await persist('processing')
+  await safePersist('processing')
   try {
     const ai = await runAiStep(
       {
@@ -368,22 +434,23 @@ export async function runDictation(
     )
     row.llmProvider = ai.provider
     row.llmModel = ai.model
-    row.llmCostUsd = ai.costUsd
+    row.llmCostUsd = isRerun && prior ? addCost(prior.llmCostUsd, ai.costUsd) : ai.costUsd
     timings.llmMs = ai.ms
     tokens = { input: ai.inputTokens, output: ai.outputTokens }
-    return finish('done', ai.text)
+    row.errorKind = null
+    row.errorMessage = null
+    return await finish('done', ai.text)
   } catch (e) {
     const err = normalizeError(e, row.llmProvider ?? 'llm')
-    row.errorKind = err.kind
-    row.errorMessage = err.message
-    if (
-      !err.cancelled &&
-      job.variant === 'transform' &&
-      deps.settings().output.fallbackToRawOnAiError
-    ) {
+    if (!err.cancelled && job.variant === 'transform' && settings.output.fallbackToRawOnAiError) {
+      row.errorKind = err.kind
+      row.errorMessage = err.message
       return finish('done_raw_fallback', rawText)
     }
-    await persist('failed')
-    return outcome('failed', null)
+    return fail(err)
   }
+}
+
+function addCost(prior: number | null, added: number | null): number | null {
+  return added === null ? prior : (prior ?? 0) + added
 }
