@@ -18,14 +18,15 @@ export function entriesFromSnapshot(s: ClipboardSnapshot): Array<Array<[string, 
   return s.items.map((rec) => Object.entries(rec)).filter((e) => e.length > 0)
 }
 
-const META_PREFIX = /^(?:<meta charset='utf-8'>)+/
+const META_PREFIX = new TextEncoder().encode("<meta charset='utf-8'>")
 
 /**
- * Chromium prepends `<meta charset='utf-8'>` to HTML on every clipboard write, so a snapshot/restore
- * round trip would grow it each time. Strip it from HTML payloads when snapshotting.
+ * Chromium prepends exactly one `<meta charset='utf-8'>` to `text/html` on clipboard read/write, so a
+ * snapshot/restore round trip would grow it each time. Remove that single prefix (byte-level, lossless);
+ * a genuine meta that follows it, and raw platform HTML types, are left untouched.
  */
 export function stripHtmlMeta(type: string, bytes: Uint8Array): Uint8Array {
-  if (!/html/i.test(type)) return bytes
-  const text = new TextDecoder().decode(bytes)
-  return META_PREFIX.test(text) ? new TextEncoder().encode(text.replace(META_PREFIX, '')) : bytes
+  if (type !== 'text/html' || bytes.length < META_PREFIX.length) return bytes
+  for (let i = 0; i < META_PREFIX.length; i++) if (bytes[i] !== META_PREFIX[i]) return bytes
+  return bytes.subarray(META_PREFIX.length)
 }

@@ -39,12 +39,21 @@ describe('clipboard item conversion', () => {
     expect(entriesFromSnapshot({ items: [{}] })).toEqual([])
   })
 
-  test('stripHtmlMeta removes repeated Chromium meta prefixes from html only', () => {
+  test('stripHtmlMeta removes exactly one Chromium prefix, text/html only, byte-level', () => {
     const enc = (t: string): Uint8Array => new TextEncoder().encode(t)
     const dec = (b: Uint8Array): string => new TextDecoder().decode(b)
-    const html = enc("<meta charset='utf-8'><meta charset='utf-8'><b>x</b>")
-    expect(dec(stripHtmlMeta('text/html', html))).toBe('<b>x</b>')
-    expect(dec(stripHtmlMeta('text/plain', html))).toContain('<meta')
+    const meta = "<meta charset='utf-8'>"
+    // source app's own meta survives: Chromium prefix + legit meta + body -> legit meta + body
+    expect(dec(stripHtmlMeta('text/html', enc(`${meta}${meta}<b>x</b>`)))).toBe(`${meta}<b>x</b>`)
+    expect(dec(stripHtmlMeta('text/html', enc(`${meta}<b>x</b>`)))).toBe('<b>x</b>')
     expect(dec(stripHtmlMeta('text/html', enc('<b>x</b>')))).toBe('<b>x</b>')
+    const raw = enc(`${meta}<b>x</b>`)
+    expect(
+      stripHtmlMeta('electron application/osclipboard;format="Apple HTML pasteboard type"', raw)
+    ).toBe(raw)
+    expect(stripHtmlMeta('text/plain', raw)).toBe(raw)
+    const tail = Uint8Array.from([0xff, 0xfe, 0xc3, 0x28])
+    const mixed = new Uint8Array([...enc(meta), ...tail])
+    expect(Array.from(stripHtmlMeta('text/html', mixed))).toEqual(Array.from(tail))
   })
 })

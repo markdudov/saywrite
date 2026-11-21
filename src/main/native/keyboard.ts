@@ -18,11 +18,19 @@ export function createKeyHook(
   let running = false
   const handleDown = (e: { keycode: number }): void => {
     down.add(e.keycode)
-    onDown(e.keycode, performance.now())
+    try {
+      onDown(e.keycode, performance.now())
+    } catch {
+      console.warn('key hook: onDown handler threw')
+    }
   }
   const handleUp = (e: { keycode: number }): void => {
     down.delete(e.keycode)
-    onUp(e.keycode, performance.now())
+    try {
+      onUp(e.keycode, performance.now())
+    } catch {
+      console.warn('key hook: onUp handler threw')
+    }
   }
   return {
     start() {
