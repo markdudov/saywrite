@@ -14,3 +14,14 @@ test('deepMerge does not mutate its inputs', () => {
   expect(base).toEqual({ a: { b: 1 } })
   expect(out).toEqual({ a: { b: 2 } })
 })
+
+test('deepMerge ignores prototype-polluting keys', () => {
+  const out = deepMerge(
+    {},
+    JSON.parse('{"__proto__":{"polluted":true},"constructor":{"x":1},"prototype":{"y":2}}')
+  )
+  expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  expect((out as Record<string, unknown>).polluted).toBeUndefined()
+  expect(Object.getPrototypeOf(out)).toBe(Object.prototype)
+  expect(Object.keys(out)).toEqual([])
+})
