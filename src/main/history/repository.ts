@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS recordings (
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at);
 CREATE INDEX IF NOT EXISTS idx_recordings_mode_id ON recordings(mode_id);
+-- content_rowid relies on the implicit rowid; any future VACUUM must be followed by
+-- INSERT INTO recordings_fts(recordings_fts) VALUES('rebuild').
 CREATE VIRTUAL TABLE IF NOT EXISTS recordings_fts USING fts5(
   raw_text, final_text,
   content='recordings', content_rowid='rowid',
@@ -77,7 +79,7 @@ END;
 `
 
 export function toFtsQuery(text: string): string | null {
-  const tokens = text.match(/[\p{L}\p{N}]+/gu)
+  const tokens = text.normalize('NFC').match(/[\p{L}\p{N}]+/gu)
   if (!tokens) return null
   return tokens.map((t) => `"${t.toLocaleLowerCase()}"*`).join(' ')
 }
@@ -237,7 +239,7 @@ export class HistoryRepository {
 
   monthlyCost(yearMonth: string): { provider: string; costUsd: number }[] {
     const m = /^(\d{4})-(\d{2})$/.exec(yearMonth)
-    if (!m) throw new Error('Invalid yearMonth')
+    if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) throw new Error('Invalid yearMonth')
     const y = Number(m[1])
     const mo = Number(m[2])
     const start = new Date(y, mo - 1, 1).getTime()

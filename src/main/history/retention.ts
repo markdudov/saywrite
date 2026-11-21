@@ -18,9 +18,16 @@ export async function purgeExpired(
   const cutoff = retentionCutoff(settings.privacy.retention, now)
   if (cutoff === null) return 0
   const ids = repo.idsOlderThan(cutoff)
+  let purged = 0
   for (const id of ids) {
-    repo.delete(id)
-    await files.remove(id)
+    try {
+      // Files first: if removal fails the row stays, so the id is retried on the next purge.
+      await files.remove(id)
+      repo.delete(id)
+      purged++
+    } catch {
+      console.warn(`History purge failed for recording ${id}`)
+    }
   }
-  return ids.length
+  return purged
 }

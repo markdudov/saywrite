@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { HistoryRepository, toFtsQuery, type HistoryQuery } from '../../src/main/history/repository'
 import { RecordingFiles } from '../../src/main/history/files'
 import { purgeExpired, retentionCutoff } from '../../src/main/history/retention'
@@ -212,4 +212,36 @@ test('purgeExpired removes rows and folders older than 30d', async () => {
   expect(await files.readAudio('fresh')).not.toBeNull()
   settings.privacy.retention = 'forever'
   expect(await purgeExpired(repo, files, settings, now + 1000 * day)).toBe(0)
+})
+
+test('purgeExpired keeps the row when file removal fails and continues', async () => {
+  const files = new RecordingFiles(path.join(dir, 'root'))
+  const now = Date.parse('2026-11-21T12:00')
+  const day = 86_400_000
+  for (const id of ['bad', 'ok1', 'ok2']) repo.upsert(row({ id, createdAt: now - 40 * day }))
+  const realRemove = files.remove.bind(files)
+  files.remove = async (id: string): Promise<void> => {
+    if (id === 'bad') throw new Error('EPERM')
+    await realRemove(id)
+  }
+  const settings = defaultSettings('darwin')
+  settings.privacy.retention = '30d'
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  expect(await purgeExpired(repo, files, settings, now)).toBe(2)
+  expect(warn).toHaveBeenCalledTimes(1)
+  warn.mockRestore()
+  expect(repo.get('bad')).not.toBeNull()
+  expect(repo.get('ok1')).toBeNull()
+  expect(repo.get('ok2')).toBeNull()
+})
+
+test('search normalizes NFD queries to NFC', () => {
+  repo.upsert(row({ id: 'a', finalText: 'Български \u0439' }))
+  expect(repo.search(q({ text: '\u0438\u0306' })).rows.map((r) => r.id)).toEqual(['a'])
+})
+
+test('monthlyCost rejects invalid months', () => {
+  expect(() => repo.monthlyCost('2026-13')).toThrow()
+  expect(() => repo.monthlyCost('2026-00')).toThrow()
+  expect(() => repo.monthlyCost('2026-12')).not.toThrow()
 })
