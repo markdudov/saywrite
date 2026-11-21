@@ -33,8 +33,9 @@ export class SecretStore {
   }
 
   get(id: SecretId): string | null {
-    const enc = this.jf.read().entries[id]
-    if (!enc) return null
+    const entries = this.jf.read().entries
+    const enc = Object.hasOwn(entries, id) ? entries[id] : undefined
+    if (typeof enc !== 'string' || !enc) return null
     if (!this.cipher.isAvailable()) throw new SecretsUnavailableError()
     try {
       return this.cipher.decrypt(Buffer.from(enc, 'base64'))
@@ -56,7 +57,8 @@ export class SecretStore {
   }
 
   has(id: SecretId): boolean {
-    return id in this.jf.read().entries
+    const entries = this.jf.read().entries
+    return Object.hasOwn(entries, id) && typeof entries[id] === 'string'
   }
 
   masked(id: SecretId): string | null {

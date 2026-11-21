@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { JsonFile } from '../../src/main/stores/jsonFile'
 import { SettingsStore } from '../../src/main/stores/settingsStore'
 import { BuiltinModeError, ModeStore } from '../../src/main/stores/modeStore'
@@ -101,6 +101,59 @@ test('ModeStore rejects path-escaping ids, skips invalid files, notifies', () =>
   store.onChange(() => n++)
   store.save(custom)
   expect(n).toBe(1)
+})
+
+test('ModeStore id allow-list and reserved names', () => {
+  const store = new ModeStore(path.join(dir, 'modes'))
+  for (const id of ['C:x', 'a.b', 'CON', 'nul', 'com1', 'LPT9', '', 'x'.repeat(65)]) {
+    expect(() => store.save({ ...custom, id })).toThrow()
+  }
+  expect(store.save({ ...custom, id: 'Good_id-1' }).id).toBe('Good_id-1')
+})
+
+test('ModeStore.reorder dedupes ids', () => {
+  const store = new ModeStore(path.join(dir, 'modes'))
+  store.ensureBuiltins()
+  store.reorder(['builtin-edit', 'builtin-edit'])
+  expect(store.list().map((m) => m.order)).toEqual([0, 1, 2, 3, 4, 5, 6])
+  expect(store.list()[0].id).toBe('builtin-edit')
+})
+
+test('throwing listeners neither fail the write nor skip others', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const s = new SettingsStore(path.join(dir, 'settings.json'), 'darwin')
+  let ok = 0
+  s.onChange(() => {
+    throw new Error('boom')
+  })
+  s.onChange(() => ok++)
+  expect(() => s.update({ sounds: false })).not.toThrow()
+  expect(ok).toBe(1)
+  const m = new ModeStore(path.join(dir, 'modes'))
+  let okM = 0
+  m.onChange(() => {
+    throw new Error('boom')
+  })
+  m.onChange(() => okM++)
+  expect(() => m.save(custom)).not.toThrow()
+  expect(okM).toBe(1)
+  warn.mockRestore()
+})
+
+test('read errors other than ENOENT throw and never lead to overwrite', () => {
+  const file = path.join(dir, 'secrets.json')
+  fs.mkdirSync(file)
+  const jf = new JsonFile(file, z.object({ n: z.number() }), () => ({ n: 0 }))
+  expect(() => jf.read()).toThrow()
+  const secrets = new SecretStore(file, fakeCipher())
+  expect(() => secrets.set('openai', 'sk-abcdef123456')).toThrow()
+  expect(fs.statSync(file).isDirectory()).toBe(true)
+})
+
+test('SecretStore ignores inherited keys', () => {
+  const secrets = new SecretStore(path.join(dir, 'secrets.json'), fakeCipher())
+  expect(secrets.has('toString' as never)).toBe(false)
+  expect(secrets.get('constructor' as never)).toBeNull()
 })
 
 test('VocabularyStore normalizes', () => {

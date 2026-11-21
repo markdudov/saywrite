@@ -19,7 +19,13 @@ export class SettingsStore {
   update(patch: DeepPartial<Settings>): Settings {
     const merged = SettingsSchema.parse(deepMerge(this.get(), patch))
     this.jf.write(merged)
-    for (const cb of this.listeners) cb(merged)
+    for (const cb of this.listeners) {
+      try {
+        cb(merged)
+      } catch {
+        console.warn('Settings change listener threw')
+      }
+    }
     return merged
   }
 

@@ -14,8 +14,9 @@ export class JsonFile<T> {
     let raw: string
     try {
       raw = fs.readFileSync(this.file, 'utf8')
-    } catch {
-      return this.defaults()
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return this.defaults()
+      throw err
     }
     try {
       const parsed = this.schema.safeParse(JSON.parse(raw))

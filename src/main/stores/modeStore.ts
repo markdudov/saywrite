@@ -11,6 +11,9 @@ export class BuiltinModeError extends Error {
   }
 }
 
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
+
 const isBuiltinId = (id: string): boolean => (BUILTIN_IDS as readonly string[]).includes(id)
 
 export class ModeStore {
@@ -19,9 +22,7 @@ export class ModeStore {
   constructor(private readonly dir: string) {}
 
   private fileFor(id: string): string {
-    if (!id || id.includes('/') || id.includes('\\') || id.includes('..') || id.includes('\0')) {
-      throw new Error('Invalid mode id')
-    }
+    if (!ID_RE.test(id) || RESERVED_NAMES.test(id)) throw new Error('Invalid mode id')
     return path.join(this.dir, `${id}.json`)
   }
 
@@ -31,7 +32,13 @@ export class ModeStore {
 
   private notify(): void {
     const all = this.list()
-    for (const cb of this.listeners) cb(all)
+    for (const cb of this.listeners) {
+      try {
+        cb(all)
+      } catch {
+        console.warn('Mode change listener threw')
+      }
+    }
   }
 
   /** Writes any missing built-in mode files; existing (possibly edited) ones are left alone. */
@@ -96,6 +103,7 @@ export class ModeStore {
   /** Listed ids come first in the given order; all other modes follow in their current order. */
   reorder(ids: string[]): void {
     const all = this.list()
+    ids = [...new Set(ids)]
     const byId = new Map(all.map((m) => [m.id, m]))
     const first = ids.map((id) => byId.get(id)).filter((m): m is Mode => !!m)
     const rest = all.filter((m) => !ids.includes(m.id))
