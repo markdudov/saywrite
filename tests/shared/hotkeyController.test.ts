@@ -112,4 +112,36 @@ describe('HotkeyController', () => {
     c.keyUp(KEY.AltRight, 10)
     expect(c.keyDown(KEY.Ctrl, 20)).toEqual({ type: 'start', action: { kind: 'edit' } })
   })
+
+  test('stop on key-down does not immediately restart from the rest of the chord', () => {
+    c.keyDown(KEY.Shift, 0)
+    c.keyDown(KEY.AltRight, 50)
+    c.keyUp(KEY.Shift, 100)
+    c.keyUp(KEY.AltRight, 100)
+    expect(c.keyDown(KEY.AltRight, 2000)).toEqual({ type: 'stop' })
+    expect(c.keyDown(KEY.Shift, 2010)).toBeNull()
+    c.keyUp(KEY.AltRight, 2100)
+    c.keyUp(KEY.Shift, 2100)
+    c.keyDown(KEY.Shift, 3000)
+    expect(c.keyDown(KEY.AltRight, 3050)).toEqual({ type: 'start', action: { kind: 'edit' } })
+  })
+
+  test('escape cancel with chord key still held: no restart until release', () => {
+    c.keyDown(KEY.AltRight, 0)
+    expect(c.keyDown(KEY.Escape, 50)).toEqual({ type: 'cancel' })
+    expect(c.keyDown(KEY.AltRight, 100)).toBeNull()
+    c.keyUp(KEY.Escape, 150)
+    c.keyUp(KEY.AltRight, 200)
+    expect(c.keyDown(KEY.AltRight, 300)?.type).toBe('start')
+  })
+
+  test('reset clears a stuck modifier', () => {
+    c.keyDown(KEY.Shift, 0) // key-up never arrives
+    c.reset()
+    expect(c.pressedKeys().size).toBe(0)
+    expect(c.keyDown(KEY.AltRight, 100)).toEqual({
+      type: 'start',
+      action: { kind: 'dictate', modeId: null }
+    })
+  })
 })
