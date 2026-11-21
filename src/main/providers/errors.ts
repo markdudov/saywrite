@@ -4,16 +4,25 @@ export class ProviderError extends Error {
   readonly kind: ProviderErrorKind
   readonly provider: string
   readonly status?: number
+  readonly cancelled: boolean
 
-  constructor(kind: ProviderErrorKind, provider: string, message: string, status?: number) {
+  constructor(
+    kind: ProviderErrorKind,
+    provider: string,
+    message: string,
+    status?: number,
+    opts: { cancelled?: boolean } = {}
+  ) {
     super(message)
     this.name = 'ProviderError'
     this.kind = kind
     this.provider = provider
     this.status = status
+    this.cancelled = opts.cancelled ?? false
   }
 
   get retryable(): boolean {
+    if (this.cancelled) return false
     return (
       this.kind === 'rate_limit' ||
       this.kind === 'network' ||

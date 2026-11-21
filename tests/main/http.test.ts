@@ -11,6 +11,26 @@ beforeAll(async () => {
   server = createServer((req, res) => {
     const url = req.url ?? ''
     if (url === '/hang') return
+    if (url === '/stall') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.write('{"a":')
+      return
+    }
+    if (url === '/badjson') {
+      res.end('not json')
+      return
+    }
+    if (url === '/strerr') {
+      res.statusCode = 400
+      res.setHeader('content-type', 'application/json')
+      res.end('{"error":"string failure"}')
+      return
+    }
+    if (url === '/rawerr') {
+      res.statusCode = 502
+      res.end('upstream exploded')
+      return
+    }
     if (url === '/ok') {
       res.setHeader('content-type', 'application/json')
       res.end('{"a":1}')
@@ -90,5 +110,52 @@ describe('requestJson', () => {
     )
     expect(err).toBeInstanceOf(ProviderError)
     expect(err.message).toContain('user cancelled')
+  })
+  test('timeout while reading the body is a non-cancelled timeout', async () => {
+    const err = await requestJson(`${base}/stall`, { provider: 'groq', timeoutMs: 100 }).then(
+      () => null,
+      (e) => e
+    )
+    expect(err).toMatchObject({ kind: 'timeout', cancelled: false })
+  })
+  test('already-aborted caller signal is cancelled and not retryable', async () => {
+    const err = await requestJson(`${base}/ok`, {
+      provider: 'groq',
+      timeoutMs: 1000,
+      signal: AbortSignal.abort(new Error('nope'))
+    }).then(
+      () => null,
+      (e) => e
+    )
+    expect(err).toBeInstanceOf(ProviderError)
+    expect(err.cancelled).toBe(true)
+    expect(err.retryable).toBe(false)
+  })
+  test('caller abort mid-request is cancelled', async () => {
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 20)
+    const err = await requestJson(`${base}/hang`, {
+      provider: 'groq',
+      timeoutMs: 5000,
+      signal: ac.signal
+    }).then(
+      () => null,
+      (e) => e
+    )
+    expect(err.cancelled).toBe(true)
+    expect(err.retryable).toBe(false)
+  })
+  test('invalid JSON on 2xx is a server error', async () => {
+    await expect(
+      requestJson(`${base}/badjson`, { provider: 'groq', timeoutMs: 1000 })
+    ).rejects.toMatchObject({ kind: 'server' })
+  })
+  test('string error and raw non-JSON bodies appear in the message', async () => {
+    await expect(
+      requestJson(`${base}/strerr`, { provider: 'groq', timeoutMs: 1000 })
+    ).rejects.toThrow('HTTP 400 from groq: string failure')
+    await expect(
+      requestJson(`${base}/rawerr`, { provider: 'groq', timeoutMs: 1000 })
+    ).rejects.toThrow('HTTP 502 from groq: upstream exploded')
   })
 })

@@ -28,6 +28,36 @@ function reasonText(reason: unknown): string {
   return typeof reason === 'string' ? reason : 'aborted'
 }
 
+function toProviderError(
+  e: unknown,
+  provider: string,
+  timeoutMs: number,
+  timedOut: boolean,
+  signal: AbortSignal | undefined
+): ProviderError {
+  if (timedOut) {
+    return new ProviderError(
+      'timeout',
+      provider,
+      `Request to ${provider} timed out after ${timeoutMs} ms`
+    )
+  }
+  if (signal?.aborted) {
+    return new ProviderError(
+      'timeout',
+      provider,
+      `Request to ${provider} aborted: ${reasonText(signal.reason)}`,
+      undefined,
+      { cancelled: true }
+    )
+  }
+  return new ProviderError(
+    'network',
+    provider,
+    `Network error talking to ${provider}: ${e instanceof Error ? e.message : String(e)}`
+  )
+}
+
 export async function requestJson<T>(
   url: string,
   init: RequestInit & { provider: string; timeoutMs: number; signal?: AbortSignal }
@@ -42,48 +72,12 @@ export async function requestJson<T>(
   const combined = signal ? AbortSignal.any([signal, timer.signal]) : timer.signal
   try {
     let res: Response
-    try {
-      res = await fetch(url, { ...rest, signal: combined })
-    } catch (e) {
-      if (timedOut)
-        throw new ProviderError(
-          'timeout',
-          provider,
-          `Request to ${provider} timed out after ${timeoutMs} ms`
-        )
-      if (signal?.aborted)
-        throw new ProviderError(
-          'timeout',
-          provider,
-          `Request to ${provider} aborted: ${reasonText(signal.reason)}`
-        )
-      throw new ProviderError(
-        'network',
-        provider,
-        `Network error contacting ${provider}: ${e instanceof Error ? e.message : String(e)}`
-      )
-    }
     let body: string
     try {
+      res = await fetch(url, { ...rest, signal: combined })
       body = await res.text()
     } catch (e) {
-      if (timedOut)
-        throw new ProviderError(
-          'timeout',
-          provider,
-          `Request to ${provider} timed out after ${timeoutMs} ms`
-        )
-      if (signal?.aborted)
-        throw new ProviderError(
-          'timeout',
-          provider,
-          `Request to ${provider} aborted: ${reasonText(signal.reason)}`
-        )
-      throw new ProviderError(
-        'network',
-        provider,
-        `Network error reading ${provider} response: ${e instanceof Error ? e.message : String(e)}`
-      )
+      throw toProviderError(e, provider, timeoutMs, timedOut, signal)
     }
     if (!res.ok) {
       throw new ProviderError(
